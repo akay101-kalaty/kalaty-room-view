@@ -169,7 +169,15 @@ const FS_RUG=`precision highp float;uniform mat3 uInv;uniform vec2 uRes;uniform 
 void main(){vec2 p=vec2(gl_FragCoord.x,uRes.y-gl_FragCoord.y);vec3 h=uInv*vec3(p,1.0);vec2 uv=h.xy/h.z;
  if(uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0)discard;
  float a=smoothstep(0.0,uF,uv.x)*smoothstep(0.0,uF,1.0-uv.x)*smoothstep(0.0,uF,uv.y)*smoothstep(0.0,uF,1.0-uv.y);
- vec2 tc=mix(uCrop.xy,uCrop.zw,uv);vec4 c=texture2D(uT,tc);gl_FragColor=vec4(c.rgb,c.a*a);}`;
+ vec2 tc=mix(uCrop.xy,uCrop.zw,uv);vec4 c=texture2D(uT,tc);
+ // white-studio key: fade near-white pixels to transparent, but ONLY within the outer edge band
+ // so cream/ivory rug interiors stay fully solid (mn<0.9) while the white rim (mn>0.9, low sat) is removed.
+ float mn=min(min(c.r,c.g),c.b),mx=max(max(c.r,c.g),c.b);
+ float bg=smoothstep(0.90,0.97,mn)*(1.0-smoothstep(0.05,0.14,mx-mn));
+ float de=min(min(uv.x,1.0-uv.x),min(uv.y,1.0-uv.y));
+ float eb=1.0-smoothstep(0.0,0.07,de); // 1 at edge -> 0 toward interior
+ float key=mix(1.0,1.0-bg,eb);
+ gl_FragColor=vec4(c.rgb,c.a*a*key);}`;
 const FS_SHA=`precision highp float;uniform mat3 uInv;uniform vec2 uRes;uniform float uF;uniform float uA;
 void main(){vec2 p=vec2(gl_FragCoord.x,uRes.y-gl_FragCoord.y);vec3 h=uInv*vec3(p,1.0);vec2 uv=h.xy/h.z;
  float m=smoothstep(-uF,uF,uv.x)*smoothstep(-uF,uF,1.0-uv.x)*smoothstep(-uF,uF,uv.y)*smoothstep(-uF,uF,1.0-uv.y);
@@ -196,7 +204,7 @@ function render(){
   if(!rugTex)return;const quad=currentQuad();
   drawPass(pSha,expandQuad(quad,1.03,Math.max(6,SH*0.012)),p=>{gl.uniform1f(gl.getUniformLocation(p,'uF'),0.14);gl.uniform1f(gl.getUniformLocation(p,'uA'),0.22);});
   gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,rugTex);
-  drawPass(pRug,quad,p=>{gl.uniform1i(gl.getUniformLocation(p,'uT'),0);gl.uniform4f(gl.getUniformLocation(p,'uCrop'),S.rug.crop[0],S.rug.crop[1],S.rug.crop[2],S.rug.crop[3]);gl.uniform1f(gl.getUniformLocation(p,'uF'),0.008);});
+  drawPass(pRug,quad,p=>{gl.uniform1i(gl.getUniformLocation(p,'uT'),0);gl.uniform4f(gl.getUniformLocation(p,'uCrop'),S.rug.crop[0],S.rug.crop[1],S.rug.crop[2],S.rug.crop[3]);gl.uniform1f(gl.getUniformLocation(p,'uF'),0.012);});
   placeHandles(quad);
 }
 
@@ -227,7 +235,7 @@ function autoCrop(img){const w=220,h=Math.round(w*img.height/img.width);const c=
   const isRug=(i)=>{const r=d[i],g=d[i+1],b=d[i+2],mx=Math.max(r,g,b),mn=Math.min(r,g,b);return!(r>236&&g>236&&b>236&&(mx-mn)<16);};
   let minX=w,minY=h,maxX=0,maxY=0;const need=Math.max(2,Math.round(w*0.02));
   for(let yy=0;yy<h;yy++){let cnt=0;for(let xx=0;xx<w;xx++){if(isRug((yy*w+xx)*4)){cnt++;if(xx<minX)minX=xx;if(xx>maxX)maxX=xx;}}if(cnt>=need){if(yy<minY)minY=yy;if(yy>maxY)maxY=yy;}}
-  if(maxX<=minX||maxY<=minY)return[0,0,1,1];const p=1;minX=Math.max(0,minX-p);minY=Math.max(0,minY-p);maxX=Math.min(w-1,maxX+p);maxY=Math.min(h-1,maxY+p);
+  if(maxX<=minX||maxY<=minY)return[0,0,1,1];const p=1;minX=Math.min(maxX,minX+p);minY=Math.min(maxY,minY+p);maxX=Math.max(minX,maxX-p);maxY=Math.max(minY,maxY-p); // inset inward to drop the white anti-aliased rim
   return[minX/w,minY/h,(maxX+1)/w,(maxY+1)/h];}
 async function setRug(img,code){S.rug.img=img;S.rug.code=code;S.rug.crop=autoCrop(img);uploadRugTex(img);document.getElementById('rugCode').textContent=code;render();}
 function showLoading(on,txt){const l=document.getElementById('loading');l.classList.toggle('hide',!on);if(txt)l.lastChild.textContent=txt;}
@@ -241,15 +249,16 @@ async function loadSku(sku){sku=(sku||'').trim().toUpperCase();if(!sku)return;co
 const stage=document.getElementById('stage'),handlesEl=document.getElementById('handles');
 function toNat(ev){const r=stage.getBoundingClientRect();return[(ev.clientX-r.left)/r.width*SW,(ev.clientY-r.top)/r.height*SH];}
 function placeHandles(quad){handlesEl.innerHTML='';
-  if(S.mode==='myroom'){quad.forEach((p,i)=>addHandle(p[0],p[1],'corner'+i));}
-  else{const mid=[(quad[0][0]+quad[1][0])/2,(quad[0][1]+quad[1][1])/2],c=centroid(quad);const dir=[mid[0]-c[0],mid[1]-c[1]],len=Math.hypot(dir[0],dir[1])||1;addHandle(mid[0]+dir[0]/len*36,mid[1]+dir[1]/len*36,'rot',true);}}
+  // Preset rooms: rug is locked to the floor (no handles). Only My Room gets draggable corners.
+  if(S.mode==='myroom'){quad.forEach((p,i)=>addHandle(p[0],p[1],'corner'+i));}}
 function addHandle(x,y,id,isRot){const h=document.createElement('div');h.className='handle'+(isRot?' rot':'');h.style.left=(x/SW*100)+'%';h.style.top=(y/SH*100)+'%';h.dataset.id=id;handlesEl.appendChild(h);}
 let drag=null;
 function pointInQuad(px,py,q){let s=false;for(let i=0,j=3;i<4;j=i++){const xi=q[i][0],yi=q[i][1],xj=q[j][0],yj=q[j][1];if(((yi>py)!==(yj>py))&&(px<(xj-xi)*(py-yi)/(yj-yi)+xi))s=!s;}return s;}
 stage.addEventListener('pointerdown',ev=>{const hid=ev.target.dataset&&ev.target.dataset.id;const[nx,ny]=toNat(ev);stage.setPointerCapture(ev.pointerId);
   if(hid&&hid.startsWith('corner'))drag={type:'corner',idx:+hid.slice(6)};
   else if(hid==='rot')drag={type:'rot'};
-  else{if(pointInQuad(nx,ny,currentQuad())){drag={type:'move',sx:nx,sy:ny};stage.classList.add('dragging');}else return;}
+  else if(S.mode==='myroom'&&pointInQuad(nx,ny,currentQuad())){drag={type:'move',sx:nx,sy:ny};stage.classList.add('dragging');} // move only in My Room; preset rug is locked
+  else return;
   ev.preventDefault();});
 stage.addEventListener('pointermove',ev=>{if(!drag)return;const[nx,ny]=toNat(ev);
   if(S.mode==='myroom'){const q=S.corners;if(drag.type==='corner')q[drag.idx]=[clamp(nx,0,SW),clamp(ny,0,SH)];else if(drag.type==='move'){const dx=nx-drag.sx,dy=ny-drag.sy;drag.sx=nx;drag.sy=ny;q.forEach(p=>{p[0]+=dx;p[1]+=dy;});}render();}
@@ -264,7 +273,7 @@ function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
 function buildScenes(){const el=document.getElementById('scenes');el.innerHTML='';
   Object.keys(SCENES).forEach(k=>{const sc=SCENES[k];const d=document.createElement('div');d.className='scene'+(S.sceneKey===k&&S.mode==='photo'?' sel':'');d.innerHTML=`<img src="${sc.bg}" alt="${sc.label}"/><div class="lbl">${sc.label}</div>`;d.onclick=()=>selectScene(k);el.appendChild(d);});
   const m=document.createElement('div');m.className='scene myroom'+(S.mode==='myroom'?' sel':'');m.innerHTML=S.myRoomURL?`<img src="${S.myRoomURL}" alt="My Room"/><div class="lbl">My Room</div>`:`<div class="ic">⬆</div><small>My Room</small>`;m.onclick=()=>document.getElementById('fileIn').click();el.appendChild(m);}
-async function selectScene(k){S.sceneKey=k;S.mode='photo';S.rotDeg=0;S.dx=0;S.dy=0;document.getElementById('rot').value=0;await loadScene(k);document.getElementById('rotSect').style.display='';document.getElementById('hint').firstChild.textContent='Drag the rug to move it · drag the gold dot to rotate';buildScenes();render();}
+async function selectScene(k){S.sceneKey=k;S.mode='photo';S.rotDeg=0;S.dx=0;S.dy=0;document.getElementById('rot').value=0;await loadScene(k);document.getElementById('rotSect').style.display='none';document.getElementById('hint').firstChild.textContent='Shown to scale in this room · switch designs above, or try My Room';buildScenes();render();}
 async function useMyRoom(url){S.myRoomURL=url;S.mode='myroom';const im=await loadImage(url,false);setSize(1280,Math.round(1280*im.height/im.width));roomImg=im;roomBaked=null;fgImg=null;drawRoom();drawFg();S.corners=[[SW*0.30,SH*0.46],[SW*0.70,SH*0.46],[SW*0.86,SH*0.86],[SW*0.14,SH*0.86]];document.getElementById('rotSect').style.display='none';document.getElementById('hint').firstChild.textContent='Drag the 4 dots onto your floor';buildScenes();render();}
 const fileIn=document.createElement('input');fileIn.type='file';fileIn.accept='image/*';fileIn.id='fileIn';fileIn.style.display='none';fileIn.onchange=e=>{const f=e.target.files[0];if(f)useMyRoom(URL.createObjectURL(f));};document.body.appendChild(fileIn);
 document.getElementById('rot').addEventListener('input',e=>{S.rotDeg=+e.target.value;render();});
